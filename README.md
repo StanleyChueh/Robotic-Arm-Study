@@ -1,2 +1,2 @@
 # Robotic-Arm-Study
-Study how to use robotic arm in ROS2 humble
+Robotic arm study in ROS2 humble
