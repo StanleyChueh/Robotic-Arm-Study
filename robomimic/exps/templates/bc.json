@@ -57,7 +57,7 @@
         ],
         "goal_mode": null,
         "cuda": true,
-        "batch_size": 30, 
+        "batch_size": 10, 
         "num_epochs": 2000,
         "seed": 1
     },
@@ -167,8 +167,7 @@
                 "low_dim": [
                     "robot0_eef_pos",
                     "robot0_eef_quat",
-                    "robot0_gripper_qpos",
-                    "object"
+                    "robot0_gripper_qpos"
                 ],
                 "rgb": ["robot0_eye_in_hand_image"], 
                 "depth": [],

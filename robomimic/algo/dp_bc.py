@@ -72,9 +72,12 @@ class DP_BC(PolicyAlgo):
 
         print(f"🚀 DEBUG: diffusion_steps = {self.diffusion_steps}")
         print(f"🚀 DEBUG: noise_schedule = {self.noise_schedule}")
-
+        
+        self.optimizers = {}
         # Now, call the parent constructor **after assigning diffusion_steps**
         PolicyAlgo.__init__(self, **kwargs)
+
+
 
         # Now safely call `_create_networks()`
         self._create_networks()
@@ -90,17 +93,44 @@ class DP_BC(PolicyAlgo):
 
         self.nets = nn.ModuleDict()
 
-        obs_dim = sum(v[0] if isinstance(v, (list, tuple)) else v for v in self.obs_shapes.values())
+        # ✅ Debug: Check obs_shapes and ac_dim
+        print(f"✅ DEBUG: obs_shapes = {self.obs_shapes}")
+        print(f"✅ DEBUG: ac_dim = {self.ac_dim}")
 
-        # Create the policy network
-        self.nets["denoising_network"] = DiffusionNetwork(
-            obs_shapes=self.obs_shapes,
-            ac_dim=self.ac_dim,
-            diffusion_steps=self.diffusion_steps,
-            noise_schedule=self.noise_schedule,
-        ).to(self.device)
+        # ✅ Ensure obs_shapes is valid before using
+        if not self.obs_shapes:
+            raise ValueError("🚨 ERROR: `obs_shapes` is empty! Ensure dataset contains valid observations.")
+
+        # ✅ Ensure ac_dim is valid
+        if self.ac_dim is None or self.ac_dim <= 0:
+            raise ValueError(f"🚨 ERROR: `ac_dim` is invalid! ac_dim = {self.ac_dim}")
+
+        try:
+            # ✅ Create the policy network **before** adding the optimizer
+            self.nets["denoising_network"] = DiffusionNetwork(
+                obs_shapes=self.obs_shapes,
+                ac_dim=self.ac_dim,
+                diffusion_steps=self.diffusion_steps,
+                noise_schedule=self.noise_schedule,
+            ).to(self.device)
+
+            print("✅ DEBUG: Successfully created `denoising_network`")
+        
+        except Exception as e:
+            print(f"❌ ERROR: Failed to create `denoising_network`! {e}")
+            raise
+
+        # ✅ Ensure optimizer is assigned **after** network creation
+        self.optimizers["denoising_network"] = torch.optim.Adam(
+            self.nets["denoising_network"].parameters(), lr=1e-4  # Adjust LR as needed
+        )
 
         self.nets = self.nets.float().to(self.device)
+
+        # ✅ Debugging print: Ensure `denoising_network` exists
+        print("✅ DEBUG: Final networks in self.nets:", self.nets.keys())
+        if "denoising_network" not in self.nets:
+            raise KeyError("❌ ERROR: 'denoising_network' is missing in self.nets!")
 
     def process_batch_for_training(self, batch):
         """
@@ -186,13 +216,25 @@ class DP_BC(PolicyAlgo):
                 predicted_noise = self.nets["denoising_network"](obs_tensor, noisy_actions, t)
 
             # Compute loss: MSE between predicted noise and actual noise
-            loss = F.mse_loss(predicted_noise, noise)
+            loss = F.mse_loss(predicted_noise, noise[:, -1, :self.ac_dim])  # Ensure it only selects the correct action dimension
+
             info["loss"] = loss.item()
+            print("Predicted Noise shape:", predicted_noise.shape)
+            print("Noise (target) shape:", noise.shape)
+            if noise.dim() == 3:
+                noise = noise[:, -1, :]
 
             if not validate:
                 # Backpropagation
+                # ✅ Print Available Optimizers
+
+                if "denoising_network" not in self.optimizers:
+                    raise KeyError("❌ ERROR: 'denoising_network' optimizer is missing! Check network initialization.")
+
                 self.optimizers["denoising_network"].zero_grad()
+
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.nets["denoising_network"].parameters(), max_norm=5.0) 
                 self.optimizers["denoising_network"].step()
 
         return info
@@ -213,20 +255,32 @@ class DP_BC(PolicyAlgo):
         assert not self.nets.training
         return self._sample_from_diffusion(obs_dict)
 
-    def _sample_from_diffusion(self, obs):
+    def _sample_from_diffusion(self, obs_dict):
         """
         Sample action using iterative diffusion process.
         """
-        action = torch.randn((obs.shape[0], self.ac_dim), device=self.device)
+        # ✅ Convert obs_dict into a tensor
+        state_obs = [obs_dict[k] for k in sorted(obs_dict.keys()) if len(obs_dict[k].shape) <= 2]
+        obs_tensor = torch.cat(state_obs, dim=-1).to(self.device) if state_obs else torch.zeros((1, self.ac_dim), device=self.device)
+
+        action = torch.randn((obs_tensor.shape[0], self.ac_dim), device=self.device)
 
         for t in reversed(range(self.diffusion_steps)):
-            predicted_noise = self.nets["denoising_network"](obs, action, t)
-            action = self._remove_noise(action, predicted_noise, t)
+            t_tensor = torch.full((obs_tensor.shape[0], 1), t, device=self.device, dtype=torch.long)  # ✅ Ensures correct shape
 
+            predicted_noise = self.nets["denoising_network"](obs_tensor, action, t_tensor)  # ✅ Pass tensor
+
+            action = self._remove_noise(action, predicted_noise, t_tensor)
+            action = torch.clamp(action, min=-1.0, max=1.0)  
             # Add stochastic noise to maintain the diffusion distribution
             if t > 0:
                 noise = torch.randn_like(action)
-                action += noise * self._get_beta(t)
+                action += noise * self._get_beta(t_tensor)
+            # ✅ Ensure action is finite (No NaN or Inf)
+            if torch.isnan(action).any() or torch.isinf(action).any():
+                print("🚨 ERROR: Action contains NaN or Inf! Resetting to zero.")
+                action = torch.zeros_like(action, device=self.device)
+
 
         return action
 
@@ -263,7 +317,8 @@ class DP_BC(PolicyAlgo):
         """
         Compute alpha value for the noise schedule.
         """
-        return torch.exp(-0.5 * torch.cumsum(self.noise_schedule.to(t.device), dim=0)[t])
+        alpha_t = torch.exp(-0.5 * torch.cumsum(self.noise_schedule.to(t.device), dim=0))
+        return alpha_t[t.squeeze()]  # ✅ Ensure indexing works for both scalars & tensors
 
     def _get_beta(self, t):
         """
