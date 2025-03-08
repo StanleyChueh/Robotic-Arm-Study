@@ -3,6 +3,7 @@ import numpy as np
 import h5py
 import pygame  # Install with: pip install pygame
 import json
+from scipy.spatial.transform import Rotation as R
 
 # Initialize pygame for keyboard input
 pygame.init()
@@ -113,41 +114,65 @@ def get_observations(obs):
         "robot0_eye_in_hand_image": obs.pop("robot0_eye_in_hand_image", None)  # If using birdview camera
     }
 
-def get_human_action():
-    """ Get human input from the keyboard and map it to a continuous action space. """
-    action = np.zeros(env.action_dim)  # Initialize action array
-    pygame.event.pump()  # Process keyboard events
-
+def get_human_action(obs):
+    action = np.zeros(env.action_dim)
+    pygame.event.pump()
     keys = pygame.key.get_pressed()
 
-    move_speed = 0.2  # Adjust for smooth control
-    grip_speed = 1.0  # Max speed for gripper
+    move_speed = 0.2
+    grip_speed = 1.0
+    rotation_speed = 0.3
 
-    # Adjusted movement mapping
-    if keys[pygame.K_w]:  # Move forward
-        action[0] = move_speed
-    if keys[pygame.K_s]:  # Move backward
-        action[0] = -move_speed
-    if keys[pygame.K_a]:  # Move left
-        action[1] = move_speed
-    if keys[pygame.K_d]:  # Move right
-        action[1] = -move_speed
-    if keys[pygame.K_q]:  # Move down
-        action[2] = -move_speed
-    if keys[pygame.K_e]:  # Move up
-        action[2] = move_speed
-    
-    # Use arrow keys for movement
-    if keys[pygame.K_UP]:  # Move forward (+Y)
-        action[2] = move_speed
-    if keys[pygame.K_DOWN]:  # Move backward (-Y)
-        action[2] = -move_speed
+    # Step 1: Get current orientation (clearly converting quaternion from robosuite to scipy)
+    gripper_quat_robosuite = obs["robot0_eef_quat"]
+    gripper_quat_scipy = np.array([
+        gripper_quat_robosuite[1],  # x
+        gripper_quat_robosuite[2],  # y
+        gripper_quat_robosuite[3],  # z
+        gripper_quat_robosuite[0]   # w
+    ])
 
+    # Rotation from gripper frame to world frame
+    gripper_rot_matrix = R.from_quat(gripper_quat_scipy).as_matrix()
 
-    # Open/close gripper
-    if keys[pygame.K_o]:  # Open gripper
+    # Step 1: Define movement clearly in camera/gripper local frame
+    move_local_frame = np.zeros(3)
+    move_speed = 0.2
+    grip_speed = 1.0
+    rotation_speed = 0.3
+
+    pygame.event.pump()
+    keys = pygame.key.get_pressed()
+
+    if keys[pygame.K_w]:  # Forward (local X-axis of camera)
+        move_local_frame[0] += move_speed
+    if keys[pygame.K_s]:  # Backward
+        move_local_frame[0] -= move_speed
+    if keys[pygame.K_a]:  # Left (local Y-axis)
+        move_local_frame[1] += move_speed
+    if keys[pygame.K_d]:  # Right
+        move_local_frame[1] -= move_speed
+    if keys[pygame.K_e]:  # Up (local Z-axis)
+        move_local_frame[2] += move_speed
+    if keys[pygame.K_q]:  # Down
+        move_local_frame[2] -= move_speed
+
+    # Step 2: Rotate local movements clearly into global frame
+    # ✅ Clearly critical step to maintain consistent intuitive controls
+    move_global_frame = gripper_rot_matrix @ move_local_frame
+
+    # Assemble final action clearly
+    action = np.zeros(env.action_dim)
+    action[:3] = move_global_frame
+
+    # Wrist rotation (yaw clearly around local Z-axis)
+    if keys[pygame.K_r]:
+        action[5] += rotation_speed
+
+    # Gripper open/close
+    if keys[pygame.K_o]:
         action[-1] = -grip_speed
-    if keys[pygame.K_p]:  # Close gripper
+    if keys[pygame.K_p]:
         action[-1] = grip_speed
 
     return action
@@ -164,7 +189,7 @@ for ep in range(num_episodes):
     done = False
     while not done:
         env.render()
-        action = get_human_action()  # Get user input
+        action = get_human_action(obs)  # Get user input
         next_obs, reward, done, info = env.step(action)
 
         # ✅ Store multiple observations
