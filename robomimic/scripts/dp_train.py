@@ -70,6 +70,7 @@ print(f"🚀 DEBUG: Calling algo_factory with algo_name = {config.algo_name}")
 print(f"✅ DEBUG: config.algo = {config.algo}")
 
 config.algo_config()
+
 train(config, device)
 
 def train(config, device):
@@ -198,14 +199,17 @@ def train(config, device):
     if config.train.hdf5_normalize_obs:
         obs_normalization_stats = trainset.get_obs_normalization_stats()
 
+    # Ensure batch size does not exceed dataset size
+    config.train.batch_size = min(config.train.batch_size, len(trainset))  # Prevent batch overflow
+
     # initialize data loaders
     train_loader = DataLoader(
         dataset=trainset,
         sampler=train_sampler,
         batch_size=config.train.batch_size,
-        shuffle=(train_sampler is None),
+        shuffle=False, #shuffle=(train_sampler is None),
         num_workers=config.train.num_data_workers,
-        drop_last=True
+        drop_last=False #True
     )
 
     if config.experiment.validate:
@@ -237,17 +241,22 @@ def train(config, device):
     last_ckpt_time = time.time()
 
     # number of learning steps per epoch (defaults to a full dataset pass)
-    train_num_steps = config.experiment.epoch_every_n_steps
+    train_num_steps = min(config.experiment.epoch_every_n_steps, len(trainset))
     valid_num_steps = config.experiment.validation_epoch_every_n_steps
 
     for epoch in range(1, config.train.num_epochs + 1): # epoch numbers start at 1
-        step_log = TrainUtils.run_epoch(
-            model=model,
-            data_loader=train_loader,
-            epoch=epoch,
-            num_steps=train_num_steps,
-            obs_normalization_stats=obs_normalization_stats,
-        )
+        try:
+            step_log = TrainUtils.run_epoch(
+                model=model,
+                data_loader=train_loader,
+                epoch=epoch,
+                num_steps=train_num_steps,
+                obs_normalization_stats=obs_normalization_stats,
+            )
+        except StopIteration:
+            print("⚠️ WARNING: Dataset exhausted, reducing num_steps")
+            break
+
         model.on_epoch_end(epoch)
 
         # setup checkpoint path

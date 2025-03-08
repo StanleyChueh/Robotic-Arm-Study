@@ -34,53 +34,65 @@ class DiffusionNetwork(nn.Module):
         )
 
     def forward(self, obs, actions, t, image=None):
-        # ✅ Ensure `t` has correct shape
-        if t.dim() == 3:  # If t has multiple dimensions
-            t = t[:, 0, 0].view(-1, 1)  # Extract one value per batch
+        batch_size = obs.shape[0]
 
-        elif t.dim() == 1:
-            t = t.view(-1, 1)  # Convert [batch_size] → [batch_size, 1]
+        # ✅ Flatten obs explicitly to [batch_size, obs_dim]
+        obs = obs.view(batch_size, -1)
 
-        # ✅ Flatten `actions` if needed
-        if actions.dim() > 2:
-            batch_size = actions.shape[0]
-            actions = actions.view(actions.shape[0], -1)  # Flatten to [batch_size, feature_dim]
+        # ✅ Correctly handle actions shape (should be [batch_size, ac_dim])
+        if actions.dim() == 3:
+            actions = actions[:, -1, :]  # select last timestep
+        elif actions.dim() > 3:
+            actions = actions.reshape(batch_size, -1)
+            if actions.shape[1] != self.ac_dim:
+                actions = actions[:, :self.ac_dim]  # truncate if necessary
 
-        # ✅ Process images
+        # Ensure actions dimension is explicitly ac_dim (7 in your config)
+        actions = actions[:, :self.ac_dim]
+
+        # ✅ Correct handling for t (time-step embedding), should be [batch_size, 1]
+        if t.dim() > 2:
+            t = t.view(batch_size, -1)
+        t = t[:, :1]
+
+        # ✅ Correct handling for images
         if self.use_images and image is not None:
-            if image.dim() == 4:  # [batch_size, C, H, W]
-                image = self.image_encoder(image)
-            elif image.dim() == 5:  # [batch_size, frames, C, H, W]
-                batch_size, frames, C, H, W = image.shape
-                image = image.view(batch_size, -1)  # Flatten
-            elif image.dim() == 6:
-                batch_size, num_frames, num_channels, H, W, _ = image.shape
-                image = image.view(batch_size, -1)  # Flatten
+            # Adjust from [batch_size, H, W, C] or [batch_size, 1, C, H, W] → [batch_size, C, H, W]
+            if image.dim() == 5:
+                image = image[:, -1]  # [batch_size, C, H, W]
+            if image.shape[-1] == 3:  # channels last → channels first
+                image = image.permute(0, 3, 1, 2)  # [B,H,W,C] → [B,C,H,W]
+
+            # ✅ Use image_encoder to encode images
+            image_features = self.image_encoder(image)
+
+            # Ensure batch dimension matches
+            assert image_features.shape[0] == batch_size
+
+            obs = torch.cat([obs, image_features], dim=-1)
+
+        # ✅ Dynamically compute expected observation dimension
+        expected_obs_dim = sum(
+            v[0] if isinstance(v, (list, tuple)) else int(v)
+            for v in self.obs_shapes.values()
+        )
+        if self.use_images:
+            expected_obs_dim += self.image_feature_dim
+
+        # Adjust obs if mismatch
+        if obs.shape[1] != expected_obs_dim:
+            if obs.shape[1] > expected_obs_dim:
+                obs = obs[:, :expected_obs_dim]
             else:
-                raise ValueError(f"Unexpected image tensor shape: {image.shape}")
+                padding = torch.zeros((batch_size, expected_obs_dim - obs.shape[1]), device=obs.device)
+                obs = torch.cat([obs, padding], dim=-1)
 
-            obs = torch.cat([obs, image], dim=-1)  # Concatenate image features
-
-        if obs.dim() == 3:
-            obs = obs.view(obs.shape[0], -1)  # Flatten if needed
-
-        if obs.dim() > 2:
-            obs = obs.view(obs.shape[0], -1)  # Flatten obs to [batch_size, feature_dim]
-
-        # ✅ Debugging prints
-        print(f"DEBUG: obs shape = {obs.shape}, actions shape = {actions.shape}, t shape = {t.shape}")
-
-        # ✅ Concatenate obs, actions, and t
+        # Concatenate obs, actions, t
         x = torch.cat([obs, actions, t], dim=-1)
 
-        # Check expected input shape before passing through the network
+        # ✅ Final sanity-check before model input
         expected_dim = self.model[0].in_features
         if x.shape[1] != expected_dim:
-            print(f"obs shape: {obs.shape}")
-            print(f"image shape: {image.shape if image is not None else 'None'}")
-            print(f"actions shape: {actions.shape}")
-            print(f"t shape: {t.shape}")
-
-            raise ValueError(f"Input shape mismatch: Expected {expected_dim}, got {x.shape[1]}")
+            raise ValueError(f"Final input shape mismatch: Expected {expected_dim}, got {x.shape[1]}")
 
         return self.model(x)

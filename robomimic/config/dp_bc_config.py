@@ -44,7 +44,6 @@ class DP_BCConfig(BaseConfig):
 
         print(f"✅ DEBUG: After setting, config.train.data = {self.train.data}")  
 
-
     def algo_config(self):
         """
         This function populates the `config.algo` attribute of the config, and is given to the 

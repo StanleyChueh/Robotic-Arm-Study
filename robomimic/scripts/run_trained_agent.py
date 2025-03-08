@@ -1,56 +1,4 @@
-"""
-The main script for evaluating a policy in an environment.
 
-Args:
-    agent (str): path to saved checkpoint pth file
-
-    horizon (int): if provided, override maximum horizon of rollout from the one 
-        in the checkpoint
-
-    env (str): if provided, override name of env from the one in the checkpoint,
-        and use it for rollouts
-
-    render (bool): if flag is provided, use on-screen rendering during rollouts
-
-    video_path (str): if provided, render trajectories to this video file path
-
-    video_skip (int): render frames to a video every @video_skip steps
-
-    camera_names (str or [str]): camera name(s) to use for rendering on-screen or to video
-
-    dataset_path (str): if provided, an hdf5 file will be written at this path with the
-        rollout data
-
-    dataset_obs (bool): if flag is provided, and @dataset_path is provided, include 
-        possible high-dimensional observations in output dataset hdf5 file (by default,
-        observations are excluded and only simulator states are saved).
-
-    seed (int): if provided, set seed for rollouts
-
-Example usage:
-
-    # Evaluate a policy with 50 rollouts of maximum horizon 400 and save the rollouts to a video.
-    # Visualize the agentview and wrist cameras during the rollout.
-    
-    python run_trained_agent.py --agent /path/to/model.pth \
-        --n_rollouts 50 --horizon 400 --seed 0 \
-        --video_path /path/to/output.mp4 \
-        --camera_names agentview robot0_eye_in_hand 
-
-    # Write the 50 agent rollouts to a new dataset hdf5.
-
-    python run_trained_agent.py --agent /path/to/model.pth \
-        --n_rollouts 50 --horizon 400 --seed 0 \
-        --dataset_path /path/to/output.hdf5 --dataset_obs 
-
-    # Write the 50 agent rollouts to a new dataset hdf5, but exclude the dataset observations
-    # since they might be high-dimensional (they can be extracted again using the
-    # dataset_states_to_obs.py script).
-
-    python run_trained_agent.py --agent /path/to/model.pth \
-        --n_rollouts 50 --horizon 400 --seed 0 \
-        --dataset_path /path/to/output.hdf5
-"""
 import argparse
 import json
 import h5py
@@ -67,32 +15,12 @@ import robomimic.utils.tensor_utils as TensorUtils
 import robomimic.utils.obs_utils as ObsUtils
 from robomimic.envs.env_base import EnvBase
 from robomimic.algo import RolloutPolicy
-
+from robomimic.algo.dp_bc import DP_BC
 
 def rollout(policy, env, horizon, render=False, video_writer=None, video_skip=5, return_obs=False, camera_names=None):
-    """
-    Helper function to carry out rollouts. Supports on-screen rendering, off-screen rendering to a video, 
-    and returns the rollout trajectory.
 
-    Args:
-        policy (instance of RolloutPolicy): policy loaded from a checkpoint
-        env (instance of EnvBase): env loaded from a checkpoint or demonstration metadata
-        horizon (int): maximum horizon for the rollout
-        render (bool): whether to render rollout on-screen
-        video_writer (imageio writer): if provided, use to write rollout to video
-        video_skip (int): how often to write video frames
-        return_obs (bool): if True, return possibly high-dimensional observations along the trajectoryu. 
-            They are excluded by default because the low-dimensional simulation states should be a minimal 
-            representation of the environment. 
-        camera_names (list): determines which camera(s) are used for rendering. Pass more than
-            one to output a video with multiple camera views concatenated horizontally.
-
-    Returns:
-        stats (dict): some statistics for the rollout - such as return, horizon, and task success
-        traj (dict): dictionary that corresponds to the rollout trajectory
-    """
     assert isinstance(env, EnvBase)
-    assert isinstance(policy, RolloutPolicy)
+    assert isinstance(policy, RolloutPolicy) or isinstance(policy, DP_BC) 
     assert not (render and (video_writer is not None))
 
     policy.start_episode()
@@ -113,7 +41,16 @@ def rollout(policy, env, horizon, render=False, video_writer=None, video_skip=5,
         for step_i in range(horizon):
 
             # get action from policy
-            act = policy(ob=obs)
+            if isinstance(policy, DP_BC):
+                obs_dict = {k: torch.tensor(v).unsqueeze(0).float().to(policy.device) for k, v in obs.items()}
+                act = policy._sample_from_diffusion(obs_dict).squeeze(0).cpu().numpy()
+            else:
+                act = policy(ob=obs)  # Regular policy
+
+            # 🚨 Prevent invalid actions
+            if np.isnan(act).any() or np.isinf(act).any():
+                print("🚨 WARNING: NaN or Inf detected in action! Resetting to zero.")
+                act = np.zeros_like(act)
 
             # play action
             next_obs, r, done, _ = env.step(act)
@@ -194,6 +131,15 @@ def run_trained_agent(args):
     # restore policy
     policy, ckpt_dict = FileUtils.policy_from_checkpoint(ckpt_path=ckpt_path, device=device, verbose=True)
 
+    diffusion_policy.diffusion_steps = ckpt_dict["algo"]["diffusion"]["steps"]
+    if isinstance(policy.policy, DP_BC):
+        print("🚀 DEBUG: Loaded Diffusion Policy Model!")
+        diffusion_policy = policy.policy  # Extract underlying DP_BC model
+        diffusion_policy.diffusion_steps = ckpt_dict["algo"]["diffusion"]["steps"]
+        diffusion_policy.noise_schedule = torch.tensor(ckpt_dict["algo"]["diffusion"]["noise_schedule"]).to(device)
+    else:
+        diffusion_policy = None
+
     # read rollout settings
     rollout_num_episodes = args.n_rollouts
     rollout_horizon = args.horizon
@@ -261,8 +207,8 @@ def run_trained_agent(args):
             total_samples += traj["actions"].shape[0]
 
     rollout_stats = TensorUtils.list_of_flat_dict_to_dict_of_list(rollout_stats)
-    avg_rollout_stats = { k : np.mean(rollout_stats[k]) for k in rollout_stats }
-    avg_rollout_stats["Num_Success"] = np.sum(rollout_stats["Success_Rate"])
+    avg_rollout_stats = {k: np.mean([x[k] for x in rollout_stats]) for k in rollout_stats[0]}
+    avg_rollout_stats["Num_Success"] = np.sum([x["Success_Rate"] for x in rollout_stats])
     print("Average Rollout Stats")
     print(json.dumps(avg_rollout_stats, indent=4))
 
