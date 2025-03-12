@@ -30,7 +30,7 @@ pip3 install -r requirements.txt
 ## Imitation Learning Training Pipeline
 
 ### Collect Data
-#### Use Robosuite human robot collection script: "robosuite/scripts/collect_human_demonstrations.py"
+#### collect_human_demonstrations.py
 ```
 cd ~/robosuite
 export MUJOCO_GL=glfw
