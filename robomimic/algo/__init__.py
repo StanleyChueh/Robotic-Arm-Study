@@ -9,7 +9,3 @@ from robomimic.algo.gl import GL, GL_VAE, ValuePlanner
 from robomimic.algo.hbc import HBC
 from robomimic.algo.iris import IRIS
 from robomimic.algo.td3_bc import TD3_BC
-
-# Diffusion Policy
-from robomimic.algo.dp_bc import DP_BC
-from robomimic.config.dp_bc_config import DP_BCConfig

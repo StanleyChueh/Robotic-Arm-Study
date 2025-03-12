@@ -46,18 +46,31 @@ def algo_name_to_factory_func(algo_name):
 
 
 def algo_factory(algo_name, config, obs_key_shapes, ac_dim, device):
-    print(f"🚀 DEBUG: Calling algo_factory with algo_name = {algo_name}")
-    print(f"✅ DEBUG: config.algo = {config.algo}")  # Check if algo config is correct
+    """
+    Factory function for creating algorithms based on the algorithm name and config.
 
+    Args:
+        algo_name (str): the algorithm name
+
+        config (BaseConfig instance): config object
+
+        obs_key_shapes (OrderedDict): dictionary that maps observation keys to shapes
+
+        ac_dim (int): dimension of action space
+
+        device (torch.Device): where the algo should live (i.e. cpu, gpu)
+    """
+
+    # @algo_name is included as an arg to be explicit, but make sure it matches the config
+    assert algo_name == config.algo_name
+
+    # use algo factory func to get algo class and kwargs from algo config
     factory_func = algo_name_to_factory_func(algo_name)
     algo_cls, algo_kwargs = factory_func(config.algo)
 
-    # Debug: Ensure algo_config contains diffusion settings
-    print(f"✅ DEBUG: algo_cls = {algo_cls}, algo_kwargs = {algo_kwargs}")
-
-    # Create algorithm instance
-    algo_instance = algo_cls(
-        algo_config=config.algo,  
+    # create algo instance
+    return algo_cls(
+        algo_config=config.algo,
         obs_config=config.observation,
         global_config=config,
         obs_key_shapes=obs_key_shapes,
@@ -66,8 +79,6 @@ def algo_factory(algo_name, config, obs_key_shapes, ac_dim, device):
         **algo_kwargs
     )
 
-    print(f"✅ DEBUG: Created algo instance of type {type(algo_instance)}")
-    return algo_instance
 
 class Algo(object):
     """
@@ -331,15 +342,6 @@ class PolicyAlgo(Algo):
     """
     Base class for all algorithms that can be used as policies.
     """
-    def __init__(self, algo_config, **kwargs):
-        print(f"🚀 DEBUG: PolicyAlgo received algo_config = {algo_config}")
-
-        if algo_config is None:
-            raise AttributeError("🚨 ERROR: `algo_config` is None inside PolicyAlgo!")
-
-        self.algo_config = algo_config  # Ensure algo_config is set before networks are created
-        super().__init__(algo_config, **kwargs)
-        
     def get_action(self, obs_dict, goal_dict=None):
         """
         Get policy action outputs.
@@ -500,8 +502,7 @@ class RolloutPolicy(object):
             # ensure obs_normalization_stats are torch Tensors on proper device
             obs_normalization_stats = TensorUtils.to_float(TensorUtils.to_device(TensorUtils.to_tensor(self.obs_normalization_stats), self.policy.device))
             # limit normalization to obs keys being used, in case environment includes extra keys
-            ob = { k : ob[k] for k in self.policy.global_config.all_obs_keys  if k in ob}
-
+            ob = { k : ob[k] for k in self.policy.global_config.all_obs_keys }
             ob = ObsUtils.normalize_obs(ob, obs_normalization_stats=obs_normalization_stats)
         return ob
 

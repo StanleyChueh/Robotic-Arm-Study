@@ -208,24 +208,11 @@ def run_rollout(
     policy.start_episode()
 
     ob_dict = env.reset()
-
-    # Check if anything adds "robot0_eye_in_hand"
-    for step in range(horizon):
-        print(f"DEBUG: Step {step}, obs_dict.keys(): {ob_dict.keys()}")
-        if "robot0_eye_in_hand" in ob_dict:
-            print(f"ERROR: 'robot0_eye_in_hand' appeared at step {step}!")
-            break  # Stop immediately to debug
-
-
     goal_dict = None
     if use_goals:
         # retrieve goal from the environment
         goal_dict = env.get_goal()
 
-    if "robot0_eye_in_hand_image" not in ob_dict:
-        raise KeyError(f"'robot0_eye_in_hand_image' is missing from observations! Available keys: {ob_dict.keys()}")
-
-    
     results = {}
     video_count = 0  # video frame counter
 

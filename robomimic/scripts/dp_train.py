@@ -367,9 +367,16 @@ def train(config, device):
 
         # Save model checkpoints based on conditions (success rate, validation loss, etc)
         if should_save_ckpt:
+            # Ensure 'algo' key is included in config before saving
+            if not hasattr(config, "algo"):
+                config.algo = config.algo_name  # Assign algo_name to ensure it is included
+
+            # Convert config to dictionary before saving (to avoid string format issue)
+            config_dict = config.to_dict() if hasattr(config, "to_dict") else vars(config)
+
             TrainUtils.save_model(
                 model=model,
-                config=config,
+                config=config_dict,  # ✅ Save as dictionary
                 env_meta=env_meta,
                 shape_meta=shape_meta,
                 ckpt_path=os.path.join(ckpt_dir, epoch_ckpt_name + ".pth"),
@@ -390,7 +397,7 @@ def main(args):
 
     if args.config is not None:
         ext_cfg = json.load(open(args.config, 'r'))
-        config = config_factory(ext_cfg["algo_name"])
+        config = config_factory(ext_cfg["algo"])
         # update config with external json - this will throw errors if
         # the external config has keys not present in the base algo config
         with config.values_unlocked():
